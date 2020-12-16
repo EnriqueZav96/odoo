@@ -193,6 +193,32 @@ class TestFields(common.TransactionCase):
             sum(invalid_transitive_depends in field_triggers.get(None, []) for field_triggers in triggers.values()), 1
         )
 
+    @mute_logger('odoo.fields')
+    def test_10_computed_stored_x_name(self):
+        # create a custom model with two fields
+        self.env["ir.model"].create({
+            "name": "x_test_10_compute_store_x_name",
+            "model": "x_test_10_compute_store_x_name",
+            "field_id": [
+                (0, 0, {'name': 'x_name', 'ttype': 'char'}),
+                (0, 0, {'name': 'x_stuff_id', 'ttype': 'many2one', 'relation': 'ir.model'}),
+            ],
+        })
+        # set 'x_stuff_id' refer to a model not loaded yet
+        self.cr.execute("""
+            UPDATE ir_model_fields
+            SET relation = 'not.loaded'
+            WHERE model = 'x_test_10_compute_store_x_name' AND name = 'x_stuff_id'
+        """)
+        # set 'x_name' be computed and depend on 'x_stuff_id'
+        self.cr.execute("""
+            UPDATE ir_model_fields
+            SET compute = 'pass', depends = 'x_stuff_id.x_custom_1'
+            WHERE model = 'x_test_10_compute_store_x_name' AND name = 'x_name'
+        """)
+        # setting up models should not crash
+        self.registry.setup_models(self.cr)
+
     def test_10_display_name(self):
         """ test definition of automatic field 'display_name' """
         field = type(self.env['test_new_api.discussion']).display_name
@@ -1012,6 +1038,32 @@ class TestFields(common.TransactionCase):
         bar.name = 'B'
         self.assertEqual(bar.foo, oof)
         self.assertIn(bar, bar.search([('foo', 'in', oof.ids)]))
+
+    def test_25_one2many_inverse_related(self):
+        left = self.env['test_new_api.trigger.left'].create({})
+        right = self.env['test_new_api.trigger.right'].create({})
+        self.assertFalse(left.right_id)
+        self.assertFalse(right.left_ids)
+        self.assertFalse(right.left_size)
+
+        # create middle: this should trigger left.right_id by traversing
+        # middle.left_id, and right.left_size by traversing left.right_id
+        # after its computation!
+        middle = self.env['test_new_api.trigger.middle'].create({
+            'left_id': left.id,
+            'right_id': right.id,
+        })
+        self.assertEqual(left.right_id, right)
+        self.assertEqual(right.left_ids, left)
+        self.assertEqual(right.left_size, 1)
+
+        # delete middle: this should trigger left.right_id by traversing
+        # middle.left_id, and right.left_size by traversing left.right_id
+        # before its computation!
+        middle.unlink()
+        self.assertFalse(left.right_id)
+        self.assertFalse(right.left_ids)
+        self.assertFalse(right.left_size)
 
     def test_26_inherited(self):
         """ test inherited fields. """

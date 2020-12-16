@@ -174,7 +174,7 @@ exports.PosModel = Backbone.Model.extend({
     },{
         model:  'res.company',
         fields: [ 'currency_id', 'email', 'website', 'company_registry', 'vat', 'name', 'phone', 'partner_id' , 'country_id', 'state_id', 'tax_calculation_rounding_method'],
-        ids:    function(self){ return [session.user_context.allowed_company_ids[0]]; },
+        ids:    function(self){ return [session.user_context.pos_session_company_ids[0]]; },
         loaded: function(self,companies){ self.company = companies[0]; },
     },{
         model:  'decimal.precision',
@@ -2041,7 +2041,9 @@ exports.Orderline = Backbone.Model.extend({
             var self = this;
             _(taxes).each(function(tax) {
                 var line_taxes = self._map_tax_fiscal_position(tax);
-                new_included_taxes = new_included_taxes.concat(line_taxes)
+                if (line_taxes.length && line_taxes[0].price_include){
+                    new_included_taxes = new_included_taxes.concat(line_taxes);
+                }
                 if(tax.price_include && !_.contains(line_taxes, tax)){
                     mapped_included_taxes.push(tax);
                 }
