@@ -141,8 +141,7 @@ class PosSession(models.Model):
 
     def action_stock_picking(self):
         self.ensure_one()
-        action_picking = self.env.ref('stock.action_picking_tree_ready')
-        action = action_picking.read()[0]
+        action = self.env['ir.actions.act_window']._for_xml_id('stock.action_picking_tree_ready')
         action['context'] = {}
         action['domain'] = [('id', 'in', self.picking_ids.ids)]
         return action
@@ -260,6 +259,8 @@ class PosSession(models.Model):
     def action_pos_session_closing_control(self):
         self._check_pos_session_balance()
         for session in self:
+            if session.state == 'closed':
+                raise UserError(_('This session is already closed.'))
             session.write({'state': 'closing_control', 'stop_at': fields.Datetime.now()})
             if not session.config_id.cash_control:
                 session.action_pos_session_close()
@@ -295,28 +296,31 @@ class PosSession(models.Model):
 
     def _validate_session(self):
         self.ensure_one()
-        self.cash_real_transaction = self.cash_register_total_entry_encoding
-        self.cash_real_expected = self.cash_register_balance_end
-        self.cash_real_difference = self.cash_register_difference
-        self._check_if_no_draft_orders()
-        if self.update_stock_at_closing:
-            self._create_picking_at_end_of_session()
-        # Users without any accounting rights won't be able to create the journal entry. If this
-        # case, switch to sudo for creation and posting.
-        sudo = False
-        if (
-            not self.env['account.move'].check_access_rights('create', raise_exception=False)
-            and self.user_has_groups('point_of_sale.group_pos_user')
-        ):
-            sudo = True
-            self.sudo().with_company(self.company_id)._create_account_move()
-        else:
-            self.with_company(self.company_id)._create_account_move()
-        if self.move_id.line_ids:
-            # Set the uninvoiced orders' state to 'done'
-            self.env['pos.order'].search([('session_id', '=', self.id), ('state', '=', 'paid')]).write({'state': 'done'})
-        else:
-            self.move_id.unlink()
+        if self.order_ids:
+            self.cash_real_transaction = self.cash_register_total_entry_encoding
+            self.cash_real_expected = self.cash_register_balance_end
+            self.cash_real_difference = self.cash_register_difference
+            if self.state == 'closed':
+                raise UserError(_('This session is already closed.'))
+            self._check_if_no_draft_orders()
+            if self.update_stock_at_closing:
+                self._create_picking_at_end_of_session()
+            # Users without any accounting rights won't be able to create the journal entry. If this
+            # case, switch to sudo for creation and posting.
+            sudo = False
+            if (
+                not self.env['account.move'].check_access_rights('create', raise_exception=False)
+                and self.user_has_groups('point_of_sale.group_pos_user')
+            ):
+                sudo = True
+                self.sudo().with_company(self.company_id)._create_account_move()
+            else:
+                self.with_company(self.company_id)._create_account_move()
+            if self.move_id.line_ids:
+                # Set the uninvoiced orders' state to 'done'
+                self.env['pos.order'].search([('session_id', '=', self.id), ('state', '=', 'paid')]).write({'state': 'done'})
+            else:
+                self.move_id.unlink()
         self.write({'state': 'closed'})
         return {
             'type': 'ir.actions.client',
@@ -348,6 +352,38 @@ class PosSession(models.Model):
             pickings = self.env['stock.picking']._create_picking_from_pos_order_lines(location_dest_id, lines, picking_type)
             pickings.write({'pos_session_id': self.id, 'origin': self.name})
 
+    def _create_balancing_line(self, data):
+        imbalance_amount = 0
+        for line in self.move_id.line_ids:
+            # it is an excess debit so it should be credited
+            imbalance_amount += line.debit - line.credit
+
+        if (not float_is_zero(imbalance_amount, precision_rounding=self.currency_id.rounding)):
+            balancing_vals = self._prepare_balancing_line_vals(imbalance_amount, self.move_id)
+            MoveLine = data.get('MoveLine')
+            MoveLine.create(balancing_vals)
+
+        return data
+
+    def _prepare_balancing_line_vals(self, imbalance_amount, move):
+        account = self._get_balancing_account()
+        partial_vals = {
+            'name': _('Difference at closing PoS session'),
+            'account_id': account.id,
+            'move_id': move.id,
+            'partner_id': False,
+        }
+        # `imbalance_amount` is already in terms of company currency so it is the amount_converted
+        # param when calling `_credit_amounts`. amount param will be the converted value of
+        # `imbalance_amount` from company currency to the session currency.
+        imbalance_amount_session = 0
+        if (not self.is_in_company_currency):
+            imbalance_amount_session = self.company_id.currency_id._convert(imbalance_amount, self.currency_id, self.company_id, fields.Date.context_today(self))
+        return self._credit_amounts(partial_vals, imbalance_amount_session, imbalance_amount)
+
+    def _get_balancing_account(self):
+        return self.company_id.account_default_pos_receivable_account_id or self.env['ir.property'].get('property_account_receivable_id', 'res.partner')
+
     def _create_account_move(self):
         """ Create account.move and account.move.line records for this session.
 
@@ -372,6 +408,7 @@ class PosSession(models.Model):
         data = self._create_cash_statement_lines_and_cash_move_lines(data)
         data = self._create_invoice_receivable_lines(data)
         data = self._create_stock_output_lines(data)
+        data = self._create_balancing_line(data)
 
         if account_move.line_ids:
             account_move._post()
@@ -481,7 +518,8 @@ class PosSession(models.Model):
                     rounding_difference = self._update_amounts(rounding_difference, {'amount': diff}, order.date_order)
 
                 # Increasing current partner's customer_rank
-                order.partner_id._increase_rank('customer_rank')
+                partners = (order.partner_id | order.partner_id.commercial_partner_id)
+                partners._increase_rank('customer_rank')
 
         if self.company_id.anglo_saxon_accounting:
             global_session_pickings = self.picking_ids.filtered(lambda p: not p.pos_order_id)
@@ -575,7 +613,7 @@ class PosSession(models.Model):
         split_cash_receivable_vals = defaultdict(list)
         for payment, amounts in split_receivables_cash.items():
             statement = statements_by_journal_id[payment.payment_method_id.cash_journal_id.id]
-            split_cash_statement_line_vals[statement].append(self._get_statement_line_vals(statement, payment.payment_method_id.receivable_account_id, amounts['amount'], payment.payment_date.date()))
+            split_cash_statement_line_vals[statement].append(self._get_statement_line_vals(statement, payment.payment_method_id.receivable_account_id, amounts['amount'], payment.payment_date))
             split_cash_receivable_vals[statement].append(self._get_split_receivable_vals(payment, amounts['amount'], amounts['amount_converted']))
         # handle combine cash payments
         combine_cash_statement_line_vals = defaultdict(list)
@@ -816,7 +854,7 @@ class PosSession(models.Model):
 
     def _get_statement_line_vals(self, statement, receivable_account, amount, date=False):
         return {
-            'date': date or fields.Date.context_today(self),
+            'date': fields.Date.context_today(self, timestamp=date),
             'amount': amount,
             'payment_ref': self.name,
             'statement_id': statement.id,

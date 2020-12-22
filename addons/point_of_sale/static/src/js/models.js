@@ -312,6 +312,13 @@ exports.PosModel = Backbone.Model.extend({
             }
        },
     },{
+      model: 'stock.picking.type',
+      fields: ['use_create_lots', 'use_existing_lots'],
+      domain: function(self){ return [['id', '=', self.config.picking_type_id[0]]]; },
+      loaded: function(self, picking_type) {
+          self.picking_type = picking_type[0];
+      },
+    },{
         model:  'res.users',
         fields: ['name','company_id', 'id', 'groups_id', 'lang'],
         domain: function(self){ return [['company_ids', 'in', self.config.company_id[0]],'|', ['groups_id','=', self.config.group_pos_manager_id[0]],['groups_id','=', self.config.group_pos_user_id[0]]]; },
@@ -1765,7 +1772,7 @@ exports.Orderline = Backbone.Model.extend({
             this.order.remove_orderline(this);
             return;
         }else{
-            var quant = field_utils.parse.float('' + quantity) || 0;
+            var quant = typeof(quantity) === 'number' ? quantity : (field_utils.parse.float('' + quantity) || 0);
             var unit = this.get_unit();
             if(unit){
                 if (unit.rounding) {
@@ -1868,7 +1875,7 @@ exports.Orderline = Backbone.Model.extend({
         }else if(!utils.float_is_zero(price - order_line_price - orderline.get_price_extra(),
                     this.pos.currency.decimals)){
             return false;
-        }else if(this.product.tracking == 'lot') {
+        }else if(this.product.tracking == 'lot' && (this.pos.picking_type.use_create_lots || this.pos.picking_type.use_existing_lots)) {
             return false;
         }else if (this.description !== orderline.description) {
             return false;
@@ -2301,7 +2308,9 @@ exports.Orderline = Backbone.Model.extend({
             var self = this;
             _(taxes).each(function(tax) {
                 var line_taxes = self._map_tax_fiscal_position(tax);
-                new_included_taxes = new_included_taxes.concat(line_taxes)
+                if (line_taxes.length && line_taxes[0].price_include){
+                    new_included_taxes = new_included_taxes.concat(line_taxes);
+                }
                 if(tax.price_include && !_.contains(line_taxes, tax)){
                     mapped_included_taxes.push(tax);
                 }
@@ -2329,6 +2338,13 @@ exports.Orderline = Backbone.Model.extend({
       this.order.assert_editable();
       this.product.lst_price = round_di(parseFloat(price) || 0, this.pos.dp['Product Price']);
       this.trigger('change',this);
+    },
+    is_last_line: function() {
+        var order = this.pos.get_order();
+        var last_id = Object.keys(order.orderlines._byId)[Object.keys(order.orderlines._byId).length-1];
+        var selectedLine = order? order.selected_orderline: null;
+
+        return !selectedLine ? false : last_id === selectedLine.cid;
     },
 });
 
@@ -3291,20 +3307,29 @@ exports.Order = Backbone.Model.extend({
     },
     get_rounding_applied: function() {
         if(this.pos.config.cash_rounding) {
-            var total = round_pr(this.get_total_with_tax(), this.pos.cash_rounding[0].rounding);
+            const only_cash = this.pos.config.only_round_cash_method;
+            const has_cash = _.some(this.get_paymentlines(), function(pl) { return pl.payment_method.is_cash_count == true;});
+            if (!only_cash || (only_cash && has_cash)) {
+                var total = round_pr(this.get_total_with_tax(), this.pos.cash_rounding[0].rounding);
+                var sign = total > 0 ? 1.0 : -1.0;
 
-            var rounding_applied = total - (this.pos.config['iface_tax_included'] === "total"? this.get_subtotal(): this.get_total_with_tax());
-            // because floor and ceil doesn't include decimals in calculation, we reuse the value of the half-up and adapt it.
-            if (utils.float_is_zero(rounding_applied, this.pos.currency.decimals)){
-                // https://xkcd.com/217/
+                var rounding_applied = total - (this.pos.config['iface_tax_included'] === "total"? this.get_subtotal(): this.get_total_with_tax());
+                rounding_applied *= sign;
+                // because floor and ceil doesn't include decimals in calculation, we reuse the value of the half-up and adapt it.
+                if (utils.float_is_zero(rounding_applied, this.pos.currency.decimals)){
+                    // https://xkcd.com/217/
+                    return 0;
+                } else if(this.pos.cash_rounding[0].rounding_method === "UP" && rounding_applied < 0) {
+                    rounding_applied += this.pos.cash_rounding[0].rounding;
+                }
+                else if(this.pos.cash_rounding[0].rounding_method === "DOWN" && rounding_applied > 0){
+                    rounding_applied -= this.pos.cash_rounding[0].rounding;
+                }
+                return sign * rounding_applied;
+            }
+            else {
                 return 0;
-            } else if(this.pos.cash_rounding[0].rounding_method === "UP" && rounding_applied < 0) {
-                rounding_applied += this.pos.cash_rounding[0].rounding;
             }
-            else if(this.pos.cash_rounding[0].rounding_method === "DOWN" && rounding_applied > 0){
-                rounding_applied -= this.pos.cash_rounding[0].rounding;
-            }
-            return rounding_applied;
         }
         return 0;
     },
