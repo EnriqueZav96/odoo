@@ -9841,7 +9841,7 @@ msgstr "Indirizzi Comunali"
 #. module: base
 #: selection:res.company,external_report_layout:0
 msgid "Clean"
-msgstr ""
+msgstr "Semplice"
 
 #. module: base
 #: model:ir.actions.act_window,help:base.action_ui_view_custom
@@ -13091,6 +13091,7 @@ msgstr ""
 msgid ""
 "France - VAT Anti-Fraud Certification for Point of Sale (CGI 286 I-3 bis)"
 msgstr ""
+"Francia - Certificazione antifrode IVA per punto vendita (CGI 286 I-3 bis)"
 
 #. module: base
 #: model:res.country,name:base.gf
@@ -16098,7 +16099,7 @@ msgstr "Gestione iscrizioni"
 #. module: base
 #: model:ir.module.module,shortdesc:base.module_note_pad
 msgid "Memos pad"
-msgstr ""
+msgstr "Pad per promemoria"
 
 #. module: base
 #: model:ir.model.fields,field_description:base.field_ir_ui_menu_name
@@ -17814,7 +17815,7 @@ msgstr ""
 #. module: base
 #: model:ir.module.module,summary:base.module_web_mobile
 msgid "Odoo Mobile Core module"
-msgstr ""
+msgstr "Modulo base Odoo per dispositivi mobili"
 
 #. module: base
 #: model:ir.module.module,description:base.module_note
@@ -23706,14 +23707,6 @@ msgstr "Questo modulo causerà la disinstallazione dei seguenti moduli."
 msgid ""
 "This theme module is exclusively for master to keep the support of "
 "Bootswatch themes which were previously part of the website module in 8.0."
-msgstr ""
-
-#. module: base
-#: code:addons/base/ir/ir_sequence.py:56
-#, python-format
-msgid ""
-"This transaction wasn't executed because another transaction is already "
-"using the same no-gap sequence. Please try again later."
 msgstr ""
 
 #. module: base
